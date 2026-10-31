@@ -11,7 +11,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
+from .api import router as api_router
 from .config import REPO_ROOT, config
+from .enroll import router as enroll_router
+from .hub import hub
+from .hub import router as ws_router
 from .tunnel import ensure as ensure_tunnel
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -45,10 +49,19 @@ async def lifespan(app: FastAPI):
     if not config.admin_token:
         log.warning("ADMIN_TOKEN is empty: admin endpoints are unauthenticated")
 
+    await hub.start()
+    log.info("hub started")
+
     yield
+
+    await hub.stop()
 
 
 app = FastAPI(title="Tethys", version=config.version, lifespan=lifespan)
+
+app.include_router(enroll_router)
+app.include_router(api_router)
+app.include_router(ws_router)
 
 
 @app.get("/health")

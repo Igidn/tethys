@@ -698,6 +698,36 @@ Not yet: `install.lua` is published with Phase 1. A live cc-util agent is still
 polling `/ws` through the tunnel and receives 403; it backs off and retries. It
 must be reinstalled with Tethys.
 
+**Phase 1 — complete (2026-10-31).**
+
+Scope grew by one item: the WS hub skeleton (`hello`/`welcome`/`heartbeat`) is
+here because "appears online in the dashboard" is the phase acceptance test.
+The command queue, retry, and removal-driven wipe stay in Phase 2.
+
+- [x] `agents/install.lua`: identity generation, GitHub rendezvous, pairing
+      banner, approval poll, flat-asset download, `prev/` rotation, startup hook
+- [x] `agents/boot.lua`: stable entry outside `current/`, rollback to `prev/`
+- [x] `agents/main.lua` and `agents/lib/{util,identity,resolve,link,supervisor}`
+- [x] `agents/tests/run.lua`: 13 checks under luajit (syntax plus pure helpers)
+- [x] `server/app/{auth,store,enroll,hub,api}.py`; routers wired in `main.py`
+- [x] `POST /api/enroll`, `GET /api/enroll/status`, `POST /api/register`
+- [x] `GET /ws` with hello auth, pending rejection, welcome, heartbeat, sweeper
+- [x] admin `/api/state`, `/api/events`, approve, role change, remove
+- [x] dashboard: token gate, pending cards with pairing codes, fleet table
+- [x] `tools/publish.py` stages flat asset names (`lib__link.lua`) and skips
+      `install.lua` from the runtime manifest
+- [x] 21 pytest cases (enrollment, pairing, auth, WS handshake, telemetry)
+
+Verified over the public tunnel: enroll returns a 6-char code, `/api/state`
+shows it, register returns 409 while pending, approve sets the role, register
+returns `role` and `config`, a `wss://…/ws` client receives `welcome` and shows
+online, and heartbeat telemetry lands in `/api/state`. `agent-v0.1.0` carries
+seven assets whose sizes match `live/runtime.json`; `/` serves the built SPA.
+
+Known gap: `install.lua` reads `textutils`/`os.epoch`, so the desktop harness
+only loads it for syntax. A mock HAL arrives with the mining runtime.
+
+
 ## 17. Quick start
 
 ```sh

@@ -37,10 +37,14 @@ def session() -> Iterator[sqlite3.Connection]:
 
 
 def get_db() -> Iterator[sqlite3.Connection]:
-    """FastAPI dependency."""
+    """FastAPI dependency. Commits when the request succeeds."""
     conn = connect()
     try:
         yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

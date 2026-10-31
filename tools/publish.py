@@ -29,7 +29,7 @@ from app.config import config  # noqa: E402
 from app.tunnel import ensure as ensure_tunnel  # noqa: E402
 
 SKIP_DIRS = {"tests", "__pycache__"}
-SKIP_FILES = {"VERSION"}
+SKIP_FILES = {"VERSION", "install.lua"}
 
 
 def now_ms() -> int:
@@ -138,6 +138,26 @@ def upload(repo: str, tag: str, files: list[Path], dry_run: bool) -> None:
     gh(["release", "upload", tag, *existing, "--repo", repo, "--clobber"], dry_run)
 
 
+def stage_assets(manifest: dict) -> list[Path]:
+    """Copy runtime files to flat release asset names.
+
+    GitHub names an uploaded asset after the file's basename, so lib/link.lua
+    would land as link.lua. The manifest addresses lib__link.lua, which also
+    keeps same-named files in different directories from colliding.
+    """
+    out_dir = STAGE / "assets"
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+
+    staged: list[Path] = []
+    for entry in manifest["files"]:
+        target = out_dir / entry["asset"]
+        shutil.copyfile(AGENTS / entry["path"], target)
+        staged.append(target)
+    return staged
+
+
 def resolve_url(explicit: str) -> str:
     if explicit:
         return explicit.rstrip("/")
@@ -233,7 +253,7 @@ def main() -> int:
             f"Agent runtime {version}.",
             args.dry_run,
         )
-        assets = [AGENTS / entry["path"] for entry in manifest["files"]] + [runtime_file]
+        assets = stage_assets(manifest) + [runtime_file]
         upload(args.repo, tag, assets, args.dry_run)
     else:
         print("no agent files yet; skipping the immutable runtime tag")
