@@ -37,6 +37,16 @@ def require_agent(
 
 
 def require_admin(authorization: str | None = Header(default=None)) -> None:
+    """Admin auth dependency. Reads the Bearer token from the Authorization header."""
+    _check_admin_token(authorization)
+
+
+def check_admin_token_raw(token: str | None) -> None:
+    """Admin auth check from a raw token string (e.g. from a query param for SSE)."""
+    _check_admin_token(f"Bearer {token}" if token else None)
+
+
+def _check_admin_token(authorization: str | None) -> None:
     if not config.admin_token:
         return
     if not authorization or not authorization.lower().startswith("bearer "):

@@ -6,18 +6,18 @@ import asyncio
 import json
 import sqlite3
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from . import commands, db
-from .auth import require_admin
+from .auth import check_admin_token_raw, require_admin
 from .config import config
 from .db import get_db
 from .hub import hub
 from .store import ROLES, event, get_agent, loads, now_ms, public_agent
 
-router = APIRouter(prefix="/api", tags=["admin"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["admin"])
 
 
 class ApproveIn(BaseModel):
@@ -83,18 +83,32 @@ def build_state(request: Request, conn: sqlite3.Connection) -> dict:
 
 
 @router.get("/state")
-def state(request: Request, conn: sqlite3.Connection = Depends(get_db)):
+def state(
+    request: Request,
+    _ = Depends(require_admin),
+    conn: sqlite3.Connection = Depends(get_db),
+):
     return build_state(request, conn)
 
 
 @router.get("/stream")
-async def stream(request: Request, authorization: str | None = Header(default=None)):
+async def stream(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    token: str | None = None,
+):
     """Server-sent state snapshots, emitted only when something changed.
 
     The dashboard reads this with `fetch` so the bearer token stays in a header
-    instead of a URL.
+    instead of a URL. SSE (EventSource) cannot set custom headers, so the token
+    is also accepted as a `?token=` query parameter for the SSE path.
     """
-    require_admin(authorization)
+    if authorization and authorization.lower().startswith("bearer "):
+        require_admin(authorization)
+    elif token:
+        check_admin_token_raw(token)
+    else:
+        require_admin(None)
 
     async def frames():
         last = ""
@@ -126,6 +140,7 @@ async def stream(request: Request, authorization: str | None = Header(default=No
 def events(
     limit: int = 100,
     since: int | None = None,
+    _ = Depends(require_admin),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     limit = max(1, min(limit, 500))
@@ -157,6 +172,7 @@ def events(
 def approve(
     agent_id: str,
     payload: ApproveIn,
+    _ = Depends(require_admin),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     row = get_agent(conn, agent_id)
@@ -192,6 +208,7 @@ def approve(
 def set_role(
     agent_id: str,
     payload: RoleIn,
+    _ = Depends(require_admin),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     row = get_agent(conn, agent_id)
@@ -216,6 +233,7 @@ def set_role(
 def set_config(
     agent_id: str,
     payload: ConfigIn,
+    _ = Depends(require_admin),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     row = get_agent(conn, agent_id)
@@ -238,7 +256,11 @@ def set_config(
 
 
 @router.post("/agents/{agent_id}/reboot")
-def reboot(agent_id: str, conn: sqlite3.Connection = Depends(get_db)):
+def reboot(
+    agent_id: str,
+    _ = Depends(require_admin),
+    conn: sqlite3.Connection = Depends(get_db),
+):
     row = get_agent(conn, agent_id)
     if row is None:
         raise HTTPException(status_code=404, detail="unknown agent")
@@ -253,7 +275,11 @@ def reboot(agent_id: str, conn: sqlite3.Connection = Depends(get_db)):
 
 
 @router.post("/agents/{agent_id}/uninstall")
-def uninstall(agent_id: str, conn: sqlite3.Connection = Depends(get_db)):
+def uninstall(
+    agent_id: str,
+    _ = Depends(require_admin),
+    conn: sqlite3.Connection = Depends(get_db),
+):
     """Queue a wipe. The machine stays `removing` until it acknowledges."""
     row = get_agent(conn, agent_id)
     if row is None:
@@ -279,6 +305,7 @@ def uninstall(agent_id: str, conn: sqlite3.Connection = Depends(get_db)):
 def remove(
     agent_id: str,
     force: bool = False,
+    _ = Depends(require_admin),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Remove a machine.
@@ -327,6 +354,7 @@ class JobIn(BaseModel):
 def start_job(
     agent_id: str,
     payload: JobIn,
+    _ = Depends(require_admin),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Start a mining job on an agent. Queues a startJob command."""
@@ -380,6 +408,7 @@ def start_job(
 @router.post("/jobs/{job_id}/abort")
 def abort_job(
     job_id: str,
+    _ = Depends(require_admin),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Abort a job. Queues an abort command on the agent."""
@@ -410,7 +439,10 @@ def abort_job(
 
 
 @router.get("/jobs")
-def list_jobs(conn: sqlite3.Connection = Depends(get_db)):
+def list_jobs(
+    _ = Depends(require_admin),
+    conn: sqlite3.Connection = Depends(get_db),
+):
     """List all jobs."""
     rows = conn.execute(
         "SELECT * FROM jobs ORDER BY created_at DESC"

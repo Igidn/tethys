@@ -36,7 +36,7 @@ export function buildIssues(snapshot: Snapshot, now = Date.now()): Issue[] {
     const mission =
       (turtle.missionId ? snapshot.missions.find((row) => row.id === turtle.missionId) : undefined) ??
       latest.get(turtle.id);
-    const state = turtle.state.toLowerCase();
+    const state = (turtle.state || "").toLowerCase();
     const push = (
       key: string,
       severity: IssueSeverity,
@@ -111,20 +111,20 @@ export function buildIssues(snapshot: Snapshot, now = Date.now()): Issue[] {
         "paused",
         "warning",
         "Mission paused",
-        turtle.role === "miner"
+        turtle.role === "mining"
           ? `Paused at ${Math.round(mission.percent)} percent. Resume when the dock is clear.`
-          : `Paused at ${Math.round(mission.percent)} percent, but the ${roleLabel(turtle.role)} role cannot resume it. Reassign to miner or abort.`,
-        turtle.role === "miner" ? { op: "start", label: "Resume" } : undefined,
+          : `Paused at ${Math.round(mission.percent)} percent, but the ${roleLabel(turtle.role)} role cannot resume it. Reassign to mining or abort.`,
+        turtle.role === "mining" ? { op: "start", label: "Resume" } : undefined,
       );
     } else if (mission?.state === "failed" && now - mission.updatedAt < 86_400_000) {
       push(
         "failed",
         "warning",
         "Last mission failed",
-        turtle.role === "miner"
+        turtle.role === "mining"
           ? `Failed ${relativeTime(mission.updatedAt, now)}. Start a fresh mission when ready.`
-          : `Failed ${relativeTime(mission.updatedAt, now)}. Reassign to miner before starting another.`,
-        turtle.role === "miner" ? { op: "start", label: "Start" } : undefined,
+          : `Failed ${relativeTime(mission.updatedAt, now)}. Reassign to mining before starting another.`,
+        turtle.role === "mining" ? { op: "start", label: "Start" } : undefined,
       );
     } else if (mission?.state === "active" && now - mission.updatedAt > 15 * 60_000) {
       push(
@@ -135,7 +135,7 @@ export function buildIssues(snapshot: Snapshot, now = Date.now()): Issue[] {
         { op: "ping", label: "Ping" },
       );
     } else if (!mission) {
-      if (turtle.role !== "miner") {
+      if (turtle.role !== "mining") {
         push(
           "role-note",
           "info",
