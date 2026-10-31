@@ -1,3 +1,27 @@
+.env
+.venv/
+
+# Local server state and secrets
+server/.env
+server/data/
+.publish/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Dashboard
+client/node_modules/
+client/dist/
+client/.vite/
+
+# macOS
+.DS_Store
+
 # Compiled Lua sources
 luac.out
 
