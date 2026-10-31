@@ -71,8 +71,32 @@ npm run build                   # output served by FastAPI at /
 Agents, without Minecraft:
 
 ```sh
-lua agents/tests/run.lua        # Lua 5.1, mock HAL
+luajit agents/tests/run.lua     # Lua 5.1, fake filesystem and OS
 ```
+
+### Command protocol
+
+Server to machine, over the socket:
+
+```json
+{"v":1,"type":"command","id":"<16 hex>","op":"setRole","payload":{"role":"mining"}}
+```
+
+The machine answers `{"type":"ack","id":"...","status":"role-assigned"}`. Ops are
+`setRole`, `setConfig`, `reboot`, `update`, and `wipe`. Statuses in
+`{ok, done, ack, role-assigned, config-set, rebooting, wiped}` mark a command
+done; anything else fails it.
+
+Delivery is at-least-once. The server retries a command four times at 15 second
+intervals and gives up. The machine keeps `/tethys/state/commands.json`, so a
+retry is acked again without running twice. Commands are written to SQLite
+before they are sent, which is why a role change made while a machine is offline
+still happens when it reconnects.
+
+Removing a machine queues `wipe` and marks it `removing`; it becomes `removed`
+only when the machine acks. The wipe restores `/startup.lua.bak`, deletes
+`/tethys`, and reboots. `DELETE /api/agents/{id}?force=true` drops it from the
+fleet immediately and leaves the files in place.
 
 The tunnel:
 

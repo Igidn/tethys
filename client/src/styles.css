@@ -126,6 +126,11 @@ button:disabled {
   max-width: 40ch;
 }
 
+.pill.warning {
+  color: var(--signal);
+  border-color: color-mix(in oklch, var(--signal) 35%, var(--border));
+}
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -415,9 +420,58 @@ tbody tr:hover {
   color: var(--danger);
 }
 
+.state[data-state="removing"],
+.state[data-state="pending"],
+.state[data-state="sent"] {
+  color: var(--signal);
+}
+
+.state[data-state="done"] {
+  color: var(--live);
+}
+
 .state[data-state="running"],
 .state[data-state="mining"] {
   color: var(--live);
+}
+
+/* row actions ------------------------------------------------------------ */
+
+.row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+tr[data-removing="true"] td {
+  opacity: 0.6;
+}
+
+/* command log ------------------------------------------------------------ */
+
+.log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  overflow: hidden;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 72px 1fr 110px 90px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+  font-size: 12.5px;
+}
+
+.log-row:last-child {
+  border-bottom: 0;
 }
 
 /* footer ----------------------------------------------------------------- */

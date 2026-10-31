@@ -17,7 +17,7 @@ local PREV_VERSION_PATH = DEST .. "/prev-version"
 local CURRENT = DEST .. "/current"
 local PREV = DEST .. "/prev"
 local STAGING = DEST .. "/.staging"
-local INSTALLER_VERSION = "0.1.0"
+local INSTALLER_VERSION = "0.2.0"
 local APPROVAL_TIMEOUT = 15 * 60 * 1000
 
 -- Helpers --------------------------------------------------------------------

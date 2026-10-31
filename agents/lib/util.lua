@@ -55,6 +55,7 @@ function M.log(...)
 end
 
 function M.jsonEncode(value)
+  if not textutils or not textutils.serializeJSON then return nil end
   local ok, out = pcall(textutils.serializeJSON, value)
   if ok then return out end
   return nil
@@ -62,6 +63,7 @@ end
 
 function M.jsonDecode(text)
   if type(text) ~= "string" then return nil end
+  if not textutils or not textutils.unserializeJSON then return nil end
   local ok, value = pcall(textutils.unserializeJSON, text)
   if ok then return value end
   return nil

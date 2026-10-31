@@ -3,8 +3,12 @@ import {
   approveAgent,
   changeRole,
   getState,
+  openStream,
+  rebootAgent,
   removeAgent,
+  uninstallAgent,
   type Agent,
+  type Command,
   type Role,
   type State,
 } from "./api";
@@ -110,6 +114,8 @@ function FleetRow({
   roles,
   busy,
   onChangeRole,
+  onReboot,
+  onUninstall,
   onRemove,
 }: {
   agent: Agent;
@@ -117,16 +123,19 @@ function FleetRow({
   roles: Role[];
   busy: boolean;
   onChangeRole: (agent: Agent, role: Role) => void;
+  onReboot: (agent: Agent) => void;
+  onUninstall: (agent: Agent) => void;
   onRemove: (agent: Agent) => void;
 }) {
-  const state = agent.online ? (agent.state ?? "idle") : "offline";
+  const removing = agent.status === "removing";
+  const state = removing ? "removing" : agent.online ? (agent.state ?? "idle") : "offline";
   const fuel = agent.fuel === "unlimited" ? "∞" : (agent.fuel ?? "—");
 
   return (
-    <tr>
+    <tr data-removing={removing}>
       <td>
         <div className="name">
-          <Dot live={agent.online} />
+          <Dot live={agent.online && !removing} />
           <span>{agent.label ?? "unlabelled"}</span>
         </div>
         <span className="mono muted small">
@@ -137,7 +146,7 @@ function FleetRow({
         <select
           className="inline"
           value={agent.role}
-          disabled={busy}
+          disabled={busy || removing}
           onChange={(event) => onChangeRole(agent, event.target.value as Role)}
         >
           {roles.map((entry) => (
@@ -155,12 +164,43 @@ function FleetRow({
       <td className="mono">{agent.runtime ?? "—"}</td>
       <td className="mono">{fuel}</td>
       <td className="mono muted">{relative(agent.lastSeen, now)}</td>
-      <td className="right">
-        <button className="ghost small" disabled={busy} onClick={() => onRemove(agent)}>
-          remove
-        </button>
+      <td className="right row-actions">
+        {removing ? (
+          <span className="mono muted small">waiting for wipe</span>
+        ) : (
+          <>
+            <button
+              className="ghost small"
+              disabled={busy || !agent.online}
+              onClick={() => onReboot(agent)}
+            >
+              reboot
+            </button>
+            <button className="ghost small" disabled={busy} onClick={() => onUninstall(agent)}>
+              uninstall
+            </button>
+            <button className="ghost small" disabled={busy} onClick={() => onRemove(agent)}>
+              remove
+            </button>
+          </>
+        )}
       </td>
     </tr>
+  );
+}
+
+function CommandRow({ command, now }: { command: Command; now: number }) {
+  return (
+    <li className="log-row">
+      <span className="state" data-state={command.state}>
+        {command.state}
+      </span>
+      <span className="mono">{command.op}</span>
+      <span className="mono muted small">
+        {command.attempts > 0 ? `${command.attempts} attempt${command.attempts === 1 ? "" : "s"}` : "queued"}
+      </span>
+      <span className="mono muted small right">{relative(command.createdAt, now)}</span>
+    </li>
   );
 }
 
@@ -187,25 +227,31 @@ export default function App() {
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
-    let timer = 0;
 
-    const tick = async () => {
-      try {
-        const next = await getState(token);
-        if (!cancelled) {
-          setState(next);
-          setError(null);
-        }
-      } catch (cause) {
+    const stop = openStream(
+      token,
+      (next) => {
+        if (cancelled) return;
+        setState(next);
+        setError(null);
+      },
+      (cause) => {
+        if (!cancelled) setError(cause.message);
+      },
+    );
+
+    // A first fetch paints immediately instead of waiting for a change.
+    void getState(token)
+      .then((next) => {
+        if (!cancelled) setState(next);
+      })
+      .catch((cause: unknown) => {
         if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
-      }
-      if (!cancelled) timer = window.setTimeout(tick, 3000);
-    };
+      });
 
-    void tick();
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      stop();
     };
   }, [token]);
 
@@ -243,6 +289,7 @@ export default function App() {
 
   const pending = state?.pending ?? [];
   const agents = state?.agents ?? [];
+  const commands = state?.commands ?? [];
 
   return (
     <>
@@ -257,6 +304,9 @@ export default function App() {
             <Dot live={Boolean(state?.counts.online)} />
             {state?.counts.online ?? 0} online
           </span>
+          {state?.counts.removing ? (
+            <span className="pill warning">{state.counts.removing} removing</span>
+          ) : null}
           <button
             className="ghost small"
             onClick={() => {
@@ -339,8 +389,24 @@ export default function App() {
                       onChangeRole={(target, role) =>
                         run(target.id, () => changeRole(token, target.id, role))
                       }
+                      onReboot={(target) =>
+                        run(target.id, () => rebootAgent(token, target.id))
+                      }
+                      onUninstall={(target) => {
+                        if (
+                          window.confirm(
+                            `Uninstall Tethys from ${target.label ?? target.id.slice(0, 8)}? The machine wipes itself and reboots.`,
+                          )
+                        ) {
+                          void run(target.id, () => uninstallAgent(token, target.id));
+                        }
+                      }}
                       onRemove={(target) => {
-                        if (window.confirm(`Remove ${target.label ?? target.id.slice(0, 8)}?`)) {
+                        if (
+                          window.confirm(
+                            `Remove ${target.label ?? target.id.slice(0, 8)}? It wipes itself on the next connect.`,
+                          )
+                        ) {
                           void run(target.id, () => removeAgent(token, target.id));
                         }
                       }}
@@ -349,6 +415,26 @@ export default function App() {
                 </tbody>
               </table>
             </div>
+          )}
+        </section>
+
+        <section>
+          <div className="section-head">
+            <h2>recent commands</h2>
+            <span className="count">{commands.length}</span>
+          </div>
+
+          {commands.length === 0 ? (
+            <p className="empty">
+              No commands yet. Changing a role or rebooting queues work that survives a
+              disconnect.
+            </p>
+          ) : (
+            <ul className="log">
+              {commands.slice(0, 8).map((command) => (
+                <CommandRow key={command.id} command={command} now={now} />
+              ))}
+            </ul>
           )}
         </section>
 

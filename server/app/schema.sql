@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS commands (
   state        TEXT NOT NULL,
   attempts     INTEGER NOT NULL DEFAULT 0,
   created_at   INTEGER NOT NULL,
-  acked_at     INTEGER
+  sent_at      INTEGER,
+  acked_at     INTEGER,
+  result_json  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS commands_pending ON commands(agent_id, state, created_at);

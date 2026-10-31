@@ -79,7 +79,7 @@ def enroll(payload: EnrollIn, conn: sqlite3.Connection = Depends(get_db)):
     row = conn.execute("SELECT * FROM agents WHERE id = ?", (payload.id,)).fetchone()
 
     if row is not None:
-        if row["status"] == "removed":
+        if row["status"] in ("removed", "removing"):
             raise HTTPException(status_code=403, detail="this machine was removed")
         if not verify_secret(payload.secret, row["secret_hash"]):
             raise HTTPException(status_code=409, detail="id is registered with a different secret")
@@ -130,7 +130,7 @@ def enroll(payload: EnrollIn, conn: sqlite3.Connection = Depends(get_db)):
 
 @router.get("/enroll/status")
 def enroll_status(agent: sqlite3.Row = Depends(require_agent)):
-    if agent["status"] == "removed":
+    if agent["status"] in ("removed", "removing"):
         raise HTTPException(status_code=403, detail="this machine was removed")
     if agent["status"] == "pending":
         return {"status": "pending", "code": agent["pairing_code"]}
@@ -148,7 +148,7 @@ def register(
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Called on every boot. Idempotent."""
-    if agent["status"] == "removed":
+    if agent["status"] in ("removed", "removing"):
         raise HTTPException(status_code=403, detail="this machine was removed")
     if agent["status"] == "pending":
         raise HTTPException(status_code=409, detail="pending approval")

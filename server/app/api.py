@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
+from . import commands, db
 from .auth import require_admin
 from .config import config
 from .db import get_db
@@ -24,8 +27,27 @@ class ApproveIn(BaseModel):
     config: dict | None = None
 
 
-@router.get("/state")
-def state(request: Request, conn: sqlite3.Connection = Depends(get_db)):
+class RoleIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    role: str
+
+
+class ConfigIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    config: dict = {}
+
+
+def _recent_commands(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM commands ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [commands.public_command(row) for row in rows]
+
+
+def build_state(request: Request, conn: sqlite3.Connection) -> dict:
     rows = conn.execute("SELECT * FROM agents ORDER BY created_at").fetchall()
     agents = [
         public_agent(row, hub.is_online(row["id"]))
@@ -43,9 +65,11 @@ def state(request: Request, conn: sqlite3.Connection = Depends(get_db)):
             "agents": len(agents),
             "online": sum(1 for agent in agents if agent["online"]),
             "pending": len(pending),
+            "removing": sum(1 for agent in agents if agent["status"] == "removing"),
             "mining": sum(1 for agent in agents if agent["role"] == "mining"),
             "music": sum(1 for agent in agents if agent["role"] == "music"),
         },
+        "commands": _recent_commands(conn),
         "config": {
             "heartbeatMs": config.heartbeat_ms,
             "staleMs": config.stale_ms,
@@ -56,6 +80,46 @@ def state(request: Request, conn: sqlite3.Connection = Depends(get_db)):
         },
         "tunnel": tunnel.as_dict() if tunnel else None,
     }
+
+
+@router.get("/state")
+def state(request: Request, conn: sqlite3.Connection = Depends(get_db)):
+    return build_state(request, conn)
+
+
+@router.get("/stream")
+async def stream(request: Request, authorization: str | None = Header(default=None)):
+    """Server-sent state snapshots, emitted only when something changed.
+
+    The dashboard reads this with `fetch` so the bearer token stays in a header
+    instead of a URL.
+    """
+    require_admin(authorization)
+
+    async def frames():
+        last = ""
+        keepalive = 0
+        while True:
+            if await request.is_disconnected():
+                break
+            with db.session() as conn:
+                payload = json.dumps(build_state(request, conn), separators=(",", ":"))
+            if payload != last:
+                last = payload
+                keepalive = 0
+                yield f"event: state\ndata: {payload}\n\n"
+            else:
+                keepalive += 1
+                if keepalive >= 15:
+                    keepalive = 0
+                    yield ": keepalive\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        frames(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/events")
@@ -98,8 +162,8 @@ def approve(
     row = get_agent(conn, agent_id)
     if row is None:
         raise HTTPException(status_code=404, detail="unknown agent")
-    if row["status"] == "removed":
-        raise HTTPException(status_code=409, detail="this machine was removed")
+    if row["status"] in ("removed", "removing"):
+        raise HTTPException(status_code=409, detail="this machine is being removed")
     if payload.role not in ROLES:
         raise HTTPException(status_code=400, detail=f"role must be one of {', '.join(ROLES)}")
 
@@ -113,14 +177,12 @@ def approve(
                pairing_code = NULL
          WHERE id = ?
         """,
-        (
-            payload.role,
-            json.dumps(payload.config or {}),
-            now_ms(),
-            agent_id,
-        ),
+        (payload.role, json.dumps(payload.config or {}), now_ms(), agent_id),
     )
     event(conn, "approved", agent_id, {"role": payload.role})
+
+    # No command is queued here: a pending machine cannot hold a socket, so the
+    # role arrives in the welcome on its first connect.
 
     updated = get_agent(conn, agent_id)
     return {"ok": True, "agent": public_agent(updated, hub.is_online(agent_id))}
@@ -129,33 +191,126 @@ def approve(
 @router.post("/agents/{agent_id}/role")
 def set_role(
     agent_id: str,
-    payload: ApproveIn,
+    payload: RoleIn,
     conn: sqlite3.Connection = Depends(get_db),
 ):
     row = get_agent(conn, agent_id)
     if row is None:
         raise HTTPException(status_code=404, detail="unknown agent")
+    if row["status"] in ("removed", "removing"):
+        raise HTTPException(status_code=409, detail="this machine is being removed")
     if payload.role not in ROLES:
         raise HTTPException(status_code=400, detail=f"role must be one of {', '.join(ROLES)}")
 
     conn.execute("UPDATE agents SET role = ? WHERE id = ?", (payload.role, agent_id))
     event(conn, "role_changed", agent_id, {"role": payload.role})
+    commands.enqueue(conn, agent_id, "setRole", {"role": payload.role})
+    conn.commit()  # the socket may read this on another connection
+    hub.notify(agent_id)
+
     updated = get_agent(conn, agent_id)
     return {"ok": True, "agent": public_agent(updated, hub.is_online(agent_id))}
 
 
-@router.delete("/agents/{agent_id}")
-def remove(agent_id: str, conn: sqlite3.Connection = Depends(get_db)):
+@router.post("/agents/{agent_id}/config")
+def set_config(
+    agent_id: str,
+    payload: ConfigIn,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    row = get_agent(conn, agent_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown agent")
+    if row["status"] in ("removed", "removing"):
+        raise HTTPException(status_code=409, detail="this machine is being removed")
+
+    conn.execute(
+        "UPDATE agents SET config_json = ? WHERE id = ?",
+        (json.dumps(payload.config), agent_id),
+    )
+    event(conn, "config_changed", agent_id)
+    commands.enqueue(conn, agent_id, "setConfig", {"config": payload.config})
+    conn.commit()  # the socket may read this on another connection
+    hub.notify(agent_id)
+
+    updated = get_agent(conn, agent_id)
+    return {"ok": True, "agent": public_agent(updated, hub.is_online(agent_id))}
+
+
+@router.post("/agents/{agent_id}/reboot")
+def reboot(agent_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    row = get_agent(conn, agent_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown agent")
+    if row["status"] in ("removed", "removing"):
+        raise HTTPException(status_code=409, detail="this machine is being removed")
+
+    command = commands.enqueue(conn, agent_id, "reboot", {})
+    event(conn, "reboot_queued", agent_id)
+    conn.commit()  # the socket may read this on another connection
+    hub.notify(agent_id)
+    return {"ok": True, "command": commands.public_command(command)}
+
+
+@router.post("/agents/{agent_id}/uninstall")
+def uninstall(agent_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Queue a wipe. The machine stays `removing` until it acknowledges."""
     row = get_agent(conn, agent_id)
     if row is None:
         raise HTTPException(status_code=404, detail="unknown agent")
     if row["status"] == "removed":
-        return {"ok": True}
+        return {"ok": True, "agent": None}
 
-    conn.execute(
-        "UPDATE agents SET status = 'removed', pairing_code = NULL WHERE id = ?",
-        (agent_id,),
-    )
-    event(conn, "removed", agent_id)
-    hub.drop(agent_id)
-    return {"ok": True}
+    conn.execute("UPDATE agents SET status = 'removing' WHERE id = ?", (agent_id,))
+    command = commands.enqueue(conn, agent_id, "wipe", {"reason": "uninstall"})
+    event(conn, "uninstall_queued", agent_id)
+    conn.commit()  # the socket may read this on another connection
+    hub.notify(agent_id)
+
+    updated = get_agent(conn, agent_id)
+    return {
+        "ok": True,
+        "agent": public_agent(updated, hub.is_online(agent_id)),
+        "command": commands.public_command(command),
+    }
+
+
+@router.delete("/agents/{agent_id}")
+def remove(
+    agent_id: str,
+    force: bool = False,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Remove a machine.
+
+    The default asks the agent to wipe itself first, so the runtime and startup
+    hook do not linger on the computer. `force` drops it from the fleet now;
+    the next reconnect is rejected and the files stay until a manual reinstall.
+    """
+    row = get_agent(conn, agent_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown agent")
+    if row["status"] == "removed":
+        return {"ok": True, "removed": True}
+
+    if force:
+        conn.execute(
+            "UPDATE agents SET status = 'removed', pairing_code = NULL WHERE id = ?",
+            (agent_id,),
+        )
+        event(conn, "removed", agent_id, {"reason": "forced"})
+        hub.drop(agent_id)
+        return {"ok": True, "removed": True}
+
+    conn.execute("UPDATE agents SET status = 'removing' WHERE id = ?", (agent_id,))
+    commands.enqueue(conn, agent_id, "wipe", {"reason": "removed"})
+    event(conn, "remove_queued", agent_id)
+    conn.commit()  # the socket may read this on another connection
+    hub.notify(agent_id)
+
+    updated = get_agent(conn, agent_id)
+    return {
+        "ok": True,
+        "removed": False,
+        "agent": public_agent(updated, hub.is_online(agent_id)),
+    }

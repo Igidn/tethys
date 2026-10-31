@@ -124,7 +124,10 @@ def test_removed_machine_cannot_rejoin(client):
     enroll(client)
     agent_id = pending_id(client)
 
-    assert client.delete(f"/api/agents/{agent_id}", headers=ADMIN).status_code == 200
+    assert (
+        client.delete(f"/api/agents/{agent_id}?force=true", headers=ADMIN).status_code
+        == 200
+    )
     assert enroll(client).status_code == 403
     assert client.post("/api/register", json={}, headers=AGENT).status_code == 403
 

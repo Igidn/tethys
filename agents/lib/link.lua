@@ -2,6 +2,7 @@
 -- failures, and keeps the supervisor running across an outage.
 local util = require("lib.util")
 local resolve = require("lib.resolve")
+local commands = require("lib.commands")
 
 local M = {}
 
@@ -13,28 +14,34 @@ local function heartbeat(bus)
   return payload
 end
 
-local function ack(ws, id, status)
+local function ack(ws, id, status, result)
   pcall(function()
-    ws.send(util.jsonEncode({ v = 1, type = "ack", id = id, status = status }))
+    ws.send(util.jsonEncode({ v = 1, type = "ack", id = id, status = status, result = result }))
   end)
 end
 
-function M.handle(msg, bus, ws)
-  local op = msg.op
+function M.handle(msg, bus, ws, identity)
+  if msg.type == "command" then
+    local status, result, after = commands.handle(msg, bus, identity)
+    ack(ws, msg.id, status, result)
+    if after then
+      -- Give the socket a moment to flush the ack before the machine reboots
+      -- or deletes the directory this code was loaded from.
+      os.sleep(0.5)
+      after()
+    end
+    return
+  end
 
-  if op == "ping" then
+  if msg.op == "ping" then
     pcall(function()
       ws.send(util.jsonEncode({ v = 1, type = "pong", id = msg.id, seq = msg.seq }))
     end)
-  elseif op == "assignRole" then
-    if type(msg.role) == "string" then bus.role = msg.role end
-    if type(msg.config) == "table" then bus.config = msg.config end
-    util.log("link: role assigned", tostring(bus.role))
-    ack(ws, msg.id, "role-assigned")
-  else
-    -- Never ignore an unknown op: the server needs to see the version skew.
-    ack(ws, msg.id, "unknown-op")
+    return
   end
+
+  -- Never ignore an unknown message: the server needs to see version skew.
+  ack(ws, msg.id, "unknown-op")
 end
 
 local function connectOnce(identity, bus)
@@ -88,8 +95,8 @@ local function connectOnce(identity, bus)
     if incoming then
       local msg = util.jsonDecode(incoming)
       if type(msg) == "table" then
-        if msg.type == "command" then
-          M.handle(msg, bus, ws)
+        if msg.type == "command" or msg.op then
+          M.handle(msg, bus, ws, identity)
         elseif msg.type == "error" then
           util.log("link: server error:", tostring(msg.error))
         end

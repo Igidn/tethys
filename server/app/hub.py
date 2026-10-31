@@ -1,4 +1,4 @@
-"""Agent WebSocket hub: authentication, heartbeat, and connection tracking."""
+"""Agent WebSocket hub: authentication, commands, heartbeat, and tracking."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import sqlite3
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from . import db
+from . import commands, db
 from .auth import verify_secret
 from .config import config
 from .store import dumps, event, loads, now_ms
@@ -29,6 +29,7 @@ class Hub:
         self._connections: dict[str, WebSocket] = {}
         self._sweeper: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._send_lock = asyncio.Lock()
 
     def is_online(self, agent_id: str) -> bool:
         return agent_id in self._connections
@@ -71,32 +72,69 @@ class Hub:
                 _safe_close(ws, 4003, "removed"), self._loop
             )
 
+    def notify(self, agent_id: str) -> None:
+        """Ask a connected machine to pick up newly queued work now."""
+        if agent_id in self._connections and self._loop is not None:
+            asyncio.run_coroutine_threadsafe(self.flush(agent_id), self._loop)
+
+    async def flush(self, agent_id: str) -> None:
+        """Send every due command, in order, to a connected machine."""
+        ws = self._connections.get(agent_id)
+        if ws is None:
+            return
+
+        try:
+            with db.session() as conn:
+                rows = commands.due(conn, agent_id)
+                commands.mark_sent(conn, rows)
+        except sqlite3.OperationalError as error:
+            # Another writer holds the database briefly. Nothing was marked,
+            # so the next sweep will pick the same commands up.
+            log.warning("command flush deferred for %s: %s", agent_id, error)
+            return
+
+        for row in rows:
+            try:
+                async with self._send_lock:
+                    await ws.send_json(commands.envelope(row))
+            except Exception:
+                self.detach(agent_id, ws)
+                return
+
     async def _sweep_loop(self) -> None:
         interval = max(2.0, config.stale_ms / 2000)
         while True:
             await asyncio.sleep(interval)
-            cutoff = now_ms() - config.stale_ms
-            try:
-                with db.session() as conn:
-                    rows = conn.execute(
-                        """
-                        SELECT id, state FROM agents
-                         WHERE status = 'active'
-                           AND last_seen IS NOT NULL
-                           AND last_seen < ?
-                        """,
-                        (cutoff,),
-                    ).fetchall()
-                    for row in rows:
-                        if self.is_online(row["id"]) or row["state"] == "stale":
-                            continue
-                        conn.execute(
-                            "UPDATE agents SET state = 'stale' WHERE id = ?",
-                            (row["id"],),
-                        )
-                        event(conn, "stale", row["id"])
-            except Exception:  # keep the sweeper alive across transient errors
-                log.exception("stale sweep failed")
+            for agent_id in self.online_ids:
+                try:
+                    await self.flush(agent_id)
+                except Exception:
+                    log.exception("command flush failed for %s", agent_id)
+            self._mark_stale()
+
+    def _mark_stale(self) -> None:
+        cutoff = now_ms() - config.stale_ms
+        try:
+            with db.session() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, state FROM agents
+                     WHERE status = 'active'
+                       AND last_seen IS NOT NULL
+                       AND last_seen < ?
+                    """,
+                    (cutoff,),
+                ).fetchall()
+                for row in rows:
+                    if self.is_online(row["id"]) or row["state"] == "stale":
+                        continue
+                    conn.execute(
+                        "UPDATE agents SET state = 'stale' WHERE id = ?",
+                        (row["id"],),
+                    )
+                    event(conn, "stale", row["id"])
+        except Exception:  # keep the sweeper alive across transient errors
+            log.exception("stale sweep failed")
 
 
 hub = Hub()
@@ -165,6 +203,9 @@ async def agent_socket(ws: WebSocket) -> None:
         }
     )
 
+    # Anything queued while the machine was offline goes out before it idles.
+    await hub.flush(agent_id)
+
     try:
         while True:
             try:
@@ -176,14 +217,14 @@ async def agent_socket(ws: WebSocket) -> None:
                 break
             except (WebSocketDisconnect, RuntimeError):
                 break
-            await _handle(agent_id, message)
+            await _handle(agent_id, message, ws)
     finally:
         hub.detach(agent_id, ws)
         with db.session() as conn:
             event(conn, "disconnected", agent_id)
 
 
-async def _handle(agent_id: str, message) -> None:
+async def _handle(agent_id: str, message, ws: WebSocket) -> None:
     if not isinstance(message, dict):
         return
 
@@ -227,10 +268,25 @@ async def _handle(agent_id: str, message) -> None:
             event(conn, str(message.get("kind") or "event"), agent_id, message.get("data"))
         return
 
-    if kind in ("ack", "result", "progress"):
-        # Phase 2 turns these into job state transitions.
+    if kind in ("ack", "result"):
+        command_id = str(message.get("id") or "")
+        status = str(message.get("status") or ("ok" if kind == "result" else ""))
         with db.session() as conn:
-            event(conn, f"agent_{kind}", agent_id, message)
+            row = commands.ack(conn, agent_id, command_id, status, message.get("result"))
+            if row is not None and row["op"] == "wipe" and row["state"] == "done":
+                conn.execute(
+                    "UPDATE agents SET status = 'removed', pairing_code = NULL WHERE id = ?",
+                    (agent_id,),
+                )
+                event(conn, "removed", agent_id, {"reason": "wiped"})
+        if row is not None and row["op"] == "wipe" and row["state"] == "done":
+            await _safe_close(ws, 4003, "removed")
+        return
+
+    if kind == "progress":
+        # Phase 3 turns these into job progress; keep the raw event for now.
+        with db.session() as conn:
+            event(conn, "agent_progress", agent_id, message)
         return
 
     log.debug("unhandled message from %s: %s", agent_id, kind)

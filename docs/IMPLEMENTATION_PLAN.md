@@ -727,6 +727,34 @@ seven assets whose sizes match `live/runtime.json`; `/` serves the built SPA.
 Known gap: `install.lua` reads `textutils`/`os.epoch`, so the desktop harness
 only loads it for syntax. A mock HAL arrives with the mining runtime.
 
+**Phase 2 — complete (2026-11-01).**
+
+- [x] persisted command queue (`commands` table, schema 2 adds `sent_at` and
+      `result_json`); commands are written before they are sent
+- [x] delivery on connect, immediate notify when online, four attempts at 15 s
+      intervals, then `failed`
+- [x] agent-side ledger so a retry is re-acked but not re-executed
+- [x] ops `setRole`, `setConfig`, `reboot`, `wipe`; `update` acks `unsupported`
+      until Phase 4
+- [x] role and config changes survive a reboot because the agent persists them
+- [x] removal queues a wipe and holds the machine in `removing` until it acks;
+      `?force=true` drops it immediately
+- [x] SSE `/api/stream` with full state snapshots and keepalives; the dashboard
+      reads it with `fetch` so the token stays in a header
+- [x] dashboard row actions (reboot, uninstall, remove) and a recent-commands log
+- [x] 33 pytest cases and 27 Lua checks
+
+Verified over the public tunnel: a role change reaches a connected machine in
+about 0.2 s; a role change made while it is offline arrives in the next
+`welcome` plus `setRole`; acks move the command to `done`; removal queues `wipe`,
+re-enrollment is refused while `removing`, and SSE emits a state frame
+immediately.
+
+Note: the server's `/ws` closes a silent socket after `staleMs` (10 s), so an
+agent must heartbeat. `db.connect()` no longer sets `journal_mode` per
+connection; doing that under concurrent writes returned `database is locked`.
+
+
 
 ## 17. Quick start
 
