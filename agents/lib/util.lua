@@ -37,6 +37,17 @@ function M.writeAtomic(path, data)
   return true
 end
 
+--- Append one line without rewriting the file.
+function M.append(path, text)
+  local dir = path:match("^(.*)/[^/]+$")
+  if dir then M.ensureDir(dir) end
+  local handle = fs.open(path, "a")
+  if not handle then return nil, "cannot append to " .. path end
+  handle.write(text)
+  handle.close()
+  return true
+end
+
 function M.version()
   local text = M.readFile("/tethys/version")
   if not text then return "0.0.0" end

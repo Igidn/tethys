@@ -231,6 +231,7 @@ local sources = {
   "agents/lib/link.lua",
   "agents/lib/commands.lua",
   "agents/lib/supervisor.lua",
+  "agents/mining/miner.lua",
 }
 
 for _, path in ipairs(sources) do

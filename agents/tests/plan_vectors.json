@@ -1,0 +1,62 @@
+{
+  "description": "Golden vectors for the deterministic branch-mine plan. Both the Lua plan.lua and the Python server plan must produce identical leg sequences for the same spec. The mining plan excludes the descent leg (handled separately by the miner).",
+  "vectors": [
+    {
+      "name": "single lane, shallow sector",
+      "spec": {
+        "kind": "branchMine",
+        "lane": 0,
+        "laneCount": 1,
+        "sector": { "x0": 0, "x1": 16, "z0": 0, "z1": 16 },
+        "startY": 0,
+        "endY": -3,
+        "layerStep": 1,
+        "spacing": 4,
+        "maxTripBlocks": 64,
+        "maxVeinBlocks": 8,
+        "reserve": 64,
+        "base": { "x": 0, "y": 0, "z": 0, "f": 0 }
+      },
+      "expectedTotal": 387,
+      "expectedLegCount": 39
+    },
+    {
+      "name": "two lanes, split sector",
+      "spec": {
+        "kind": "branchMine",
+        "lane": 1,
+        "laneCount": 2,
+        "sector": { "x0": 0, "x1": 32, "z0": 0, "z1": 16 },
+        "startY": 0,
+        "endY": 0,
+        "layerStep": 1,
+        "spacing": 4,
+        "maxTripBlocks": 64,
+        "maxVeinBlocks": 8,
+        "reserve": 64,
+        "base": { "x": 0, "y": 0, "z": 0, "f": 0 }
+      },
+      "expectedTotal": 96,
+      "expectedLegCount": 9
+    },
+    {
+      "name": "deep mining with 3 layers at -750",
+      "spec": {
+        "kind": "branchMine",
+        "lane": 0,
+        "laneCount": 1,
+        "sector": { "x0": 0, "x1": 16, "z0": 0, "z1": 16 },
+        "startY": -750,
+        "endY": -753,
+        "layerStep": 1,
+        "spacing": 4,
+        "maxTripBlocks": 64,
+        "maxVeinBlocks": 8,
+        "reserve": 1564,
+        "base": { "x": 0, "y": 0, "z": 0, "f": 0 }
+      },
+      "expectedTotal": 387,
+      "expectedLegCount": 39
+    }
+  ]
+}

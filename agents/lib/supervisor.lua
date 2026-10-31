@@ -1,24 +1,12 @@
--- Role supervisor. Phase 1 only parks and reports status; role runtimes are
--- added under agents/<role>/ and dispatched from here.
+-- Role supervisor. Dispatches to a role module based on bus.role.
+-- Roles are folders under agents/<role>/, not branches.
 local util = require("lib.util")
+local hal = require("lib.hal")
 
 local M = {}
 
 local function inventory()
-  if not turtle then return nil end
-  local items = {}
-  for slot = 1, 16 do
-    local count = turtle.getItemCount(slot)
-    if count and count > 0 then
-      local detail = turtle.getItemDetail(slot)
-      items[#items + 1] = {
-        slot = slot,
-        count = count,
-        name = detail and detail.name or "unknown",
-      }
-    end
-  end
-  return items
+  return hal.inventory()
 end
 
 function M.run(identity, bus)
@@ -27,9 +15,9 @@ function M.run(identity, bus)
       state = bus.state or "idle",
       pose = bus.pose,
     }
-    if turtle then
-      status.fuel = turtle.getFuelLevel()
-      status.inventory = inventory()
+    if hal then
+      status.fuel = hal.fuel()
+      status.inventory = hal.inventory()
     end
     return status
   end
@@ -40,12 +28,69 @@ function M.run(identity, bus)
     local role = bus.role or identity.role or "unassigned"
     if role == "unassigned" then
       bus.state = "unassigned"
+      os.sleep(0.25)
+
+    elseif role == "mining" then
+      local spec = bus.spec
+      if spec then
+        bus.state = "mining"
+        local result, err = require("mining.miner").run(bus)
+        util.log("supervisor: mining", result or "stopped", err or "")
+
+        local status = "failed"
+        if result == "done" then status = "done"
+        elseif result == "paused" then status = "paused" end
+
+        sendResult(bus, spec, status, err)
+
+        -- Clear the local mission so a reboot does not revive a finished job.
+        local snap = require("lib.journal").load(hal.fuel)
+        if snap and snap.mission and snap.mission.id == spec.id then
+          snap.mission = nil
+          snap.tripActive = false
+          snap.tape = {}
+          require("lib.journal").save(snap)
+        end
+
+        bus.spec = nil
+        bus.jobId = nil
+        bus.abort = false
+        bus.returnHome = false
+        if status == "paused" then
+          bus.blocked = true
+          bus.state = "paused"
+        elseif status == "done" then
+          bus.blocked = false
+          bus.state = "idle"
+        else
+          bus.blocked = true
+          bus.state = "halted"
+        end
+      else
+        os.sleep(0.25)
+      end
+
     else
-      -- Phase 3 replaces this with the mining runtime.
       bus.state = "idle"
+      os.sleep(0.25)
     end
-    os.sleep(0.5)
+  end
+end
+
+--- Send a job result to the server (best effort, may be offline).
+function sendResult(bus, spec, status, err)
+  if bus.send then
+    bus.send({
+      type = "result",
+      id = bus.jobId,
+      missionId = spec.id,
+      status = status,
+      error = err,
+      stats = bus.stats,
+      progress = bus.progress,
+    })
   end
 end
 
 return M
+

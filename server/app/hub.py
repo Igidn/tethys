@@ -268,6 +268,41 @@ async def _handle(agent_id: str, message, ws: WebSocket) -> None:
             event(conn, str(message.get("kind") or "event"), agent_id, message.get("data"))
         return
 
+    if kind == "result" and message.get("missionId"):
+        # Phase 3: a job result from the miner (done / paused / failed).
+        job_id = str(message.get("missionId") or "")
+        status = str(message.get("status") or "failed")
+        with db.session() as conn:
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE id = ? AND agent_id = ?",
+                (job_id, agent_id),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    """
+                    UPDATE jobs
+                       SET state = ?,
+                           stats_json = ?,
+                           progress_json = ?,
+                           updated_at = ?
+                     WHERE id = ?
+                    """,
+                    (
+                        status,
+                        dumps(message.get("stats")),
+                        dumps(message.get("progress")),
+                        now_ms(),
+                        job_id,
+                    ),
+                )
+                event(
+                    conn,
+                    f"job_{status}",
+                    agent_id,
+                    {"id": job_id, "status": status, "error": message.get("error")},
+                )
+        return
+
     if kind in ("ack", "result"):
         command_id = str(message.get("id") or "")
         status = str(message.get("status") or ("ok" if kind == "result" else ""))
@@ -284,8 +319,38 @@ async def _handle(agent_id: str, message, ws: WebSocket) -> None:
         return
 
     if kind == "progress":
-        # Phase 3 turns these into job progress; keep the raw event for now.
-        with db.session() as conn:
+        # Phase 3: update the active job's progress and stats.
+        job_id = message.get("missionId") or message.get("jobId")
+        if job_id:
+            with db.session() as conn:
+                row = conn.execute(
+                    "SELECT * FROM jobs WHERE id = ? AND agent_id = ?",
+                    (job_id, agent_id),
+                ).fetchone()
+                if row:
+                    conn.execute(
+                        """
+                        UPDATE jobs
+                           SET progress_json = ?,
+                               stats_json = ?,
+                               updated_at = ?
+                         WHERE id = ?
+                        """,
+                        (
+                            dumps(message.get("progress")),
+                            dumps(message.get("stats")),
+                            now_ms(),
+                            job_id,
+                        ),
+                    )
+                    event(
+                        conn,
+                        "job_progress",
+                        agent_id,
+                        {"id": job_id, "progress": message.get("progress")},
+                    )
+        else:
+            # Legacy: keep the raw event.
             event(conn, "agent_progress", agent_id, message)
         return
 

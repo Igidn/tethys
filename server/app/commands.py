@@ -13,7 +13,7 @@ import sqlite3
 
 from .store import dumps, event, loads, now_ms
 
-OPS = ("setRole", "setConfig", "reboot", "update", "wipe")
+OPS = ("setRole", "setConfig", "reboot", "startJob", "abort", "returnHome", "update", "wipe")
 
 # The link loop receives every 0.5s, so a healthy agent acks in under a second.
 # Fifteen seconds leaves room for a slow turtle without retrying needlessly.

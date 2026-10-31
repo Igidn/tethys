@@ -78,6 +78,41 @@ handlers.reboot = function(msg, bus)
   return "rebooting", nil, function() os.reboot() end
 end
 
+handlers.startJob = function(msg, bus)
+  if type(msg.payload) ~= "table" then return "bad-payload" end
+  local job = msg.payload.job
+  if type(job) ~= "table" then return "bad-payload" end
+  -- Idempotency: same job id + same spec is already running, ack without
+  -- restarting. A changed spec replaces the running job.
+  if bus.jobId and job.id == bus.jobId then
+    local sameSpec = bus.spec and job.spec
+      and util.jsonEncode(bus.spec) == util.jsonEncode(job.spec)
+    if sameSpec then
+      util.log("commands: startJob already-running", tostring(job.id))
+      return "already-running"
+    end
+  end
+  bus.spec = job.spec
+  bus.spec.id = job.id
+  bus.jobId = job.id
+  bus.abort = false
+  bus.returnHome = false
+  util.log("commands: startJob", tostring(job.id))
+  return "started"
+end
+
+handlers.abort = function(msg, bus)
+  bus.abort = true
+  util.log("commands: abort", tostring(msg.id))
+  return "aborting"
+end
+
+handlers.returnHome = function(msg, bus)
+  bus.returnHome = true
+  util.log("commands: returnHome", tostring(msg.id))
+  return "returning"
+end
+
 handlers.update = function()
   -- Phase 4 installs a new runtime. Ack as failed so the server sees it.
   return "unsupported"

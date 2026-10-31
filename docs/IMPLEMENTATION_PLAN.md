@@ -635,11 +635,25 @@ role change, remove and uninstall, SSE dashboard updates.
 Acceptance: kill the server mid-session, restart it, the agent reconnects and
 runs a command that was queued while it was down.
 
-**Phase 3 — Mining (three to four days).**
-Port the libs, implement the Python plan, generate the shared vectors, run one
-turtle in a 16×16 sector, then two turtles in lanes.
-Acceptance: ten consecutive trips without intervention. Kill the server
-mid-trip: the turtle docks and parks. Cut the tunnel: the same.
+**Phase 3 — Mining (implemented 2026-11-01).**
+
+- [x] `agents/mining/miner.lua`: trip executor — descend, mine lane, retrace, refuel, deposit
+- [x] `agents/lib/supervisor.lua`: dispatch to mining module when role is "mining"
+- [x] `agents/lib/commands.lua`: startJob, abort, returnHome handlers with idempotency
+- [x] `agents/lib/link.lua`: bus.send / outbox for agent→server messages
+- [x] `agents/lib/hal.lua`: suck() for front chest refuel
+- [x] `agents/tests/plan_vectors.json`: golden vectors shared with server
+- [x] `agents/tests/run.lua`: miner.lua syntax check (28 checks)
+- [x] `server/app/mining.py`: Python plan mirroring plan.lua
+- [x] `server/app/api.py`: POST /api/agents/{id}/jobs, POST /api/jobs/{id}/abort, GET /api/jobs
+- [x] `server/app/hub.py`: job progress and result message handling
+- [x] `server/app/commands.py`: startJob, abort, returnHome added to OPS
+- [x] `server/tests/test_mining.py`: plan vectors + job lifecycle tests (44 total pytest)
+- [x] Client: role name fixes ("miner" → "mining") in fleet.tsx and mining.tsx
+- [x] Version bumped to 0.3.0 (agents + server)
+
+Acceptance (pending real-turtle verification): ten consecutive trips without intervention.
+Kill the server mid-trip: the turtle finishes the trip, docks, and parks. Cut the tunnel: the same.
 
 **Phase 4 — Updater (one day).**
 `tools/publish.py`, staging, checksums, boot fallback, channels, promote and

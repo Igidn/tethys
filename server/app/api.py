@@ -15,7 +15,7 @@ from .auth import require_admin
 from .config import config
 from .db import get_db
 from .hub import hub
-from .store import ROLES, event, get_agent, now_ms, public_agent
+from .store import ROLES, event, get_agent, loads, now_ms, public_agent
 
 router = APIRouter(prefix="/api", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -313,4 +313,120 @@ def remove(
         "ok": True,
         "removed": False,
         "agent": public_agent(updated, hub.is_online(agent_id)),
+    }
+
+
+class JobIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str = "branchMine"
+    spec: dict
+
+
+@router.post("/agents/{agent_id}/jobs")
+def start_job(
+    agent_id: str,
+    payload: JobIn,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Start a mining job on an agent. Queues a startJob command."""
+    row = get_agent(conn, agent_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown agent")
+    if row["status"] in ("removed", "removing"):
+        raise HTTPException(status_code=409, detail="this machine is being removed")
+    if row["status"] != "active":
+        raise HTTPException(status_code=409, detail="this machine is not active")
+    if row["role"] != "mining":
+        raise HTTPException(status_code=400, detail="this machine is not a miner")
+
+    import secrets
+
+    job_id = secrets.token_hex(8)
+    conn.execute(
+        """
+        INSERT INTO jobs (id, agent_id, kind, spec_json, state, progress_json,
+                          stats_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'offered', '{}', '{}', ?, ?)
+        """,
+        (
+            job_id,
+            agent_id,
+            payload.kind,
+            json.dumps(payload.spec),
+            now_ms(),
+            now_ms(),
+        ),
+    )
+    event(conn, "job_offered", agent_id, {"id": job_id, "kind": payload.kind})
+
+    # Queue the startJob command so the agent picks it up on connect.
+    command = commands.enqueue(
+        conn,
+        agent_id,
+        "startJob",
+        {"job": {"id": job_id, "kind": payload.kind, "spec": payload.spec}},
+    )
+    conn.commit()
+    hub.notify(agent_id)
+
+    return {
+        "ok": True,
+        "jobId": job_id,
+        "command": commands.public_command(command),
+    }
+
+
+@router.post("/jobs/{job_id}/abort")
+def abort_job(
+    job_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Abort a job. Queues an abort command on the agent."""
+    row = conn.execute(
+        "SELECT * FROM jobs WHERE id = ?", (job_id,)
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown job")
+
+    agent_id = row["agent_id"]
+    agent = get_agent(conn, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="unknown agent")
+    if row["state"] in ("done", "failed"):
+        return {"ok": True, "state": row["state"]}
+
+    conn.execute(
+        "UPDATE jobs SET state = 'failed', updated_at = ? WHERE id = ?",
+        (now_ms(), job_id),
+    )
+    event(conn, "job_aborted", agent_id, {"id": job_id})
+
+    command = commands.enqueue(conn, agent_id, "abort", {"jobId": job_id})
+    conn.commit()
+    hub.notify(agent_id)
+
+    return {"ok": True, "jobId": job_id, "command": commands.public_command(command)}
+
+
+@router.get("/jobs")
+def list_jobs(conn: sqlite3.Connection = Depends(get_db)):
+    """List all jobs."""
+    rows = conn.execute(
+        "SELECT * FROM jobs ORDER BY created_at DESC"
+    ).fetchall()
+    return {
+        "jobs": [
+            {
+                "id": row["id"],
+                "agentId": row["agent_id"],
+                "kind": row["kind"],
+                "state": row["state"],
+                "progress": loads(row["progress_json"], {}),
+                "stats": loads(row["stats_json"], {}),
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        ]
     }

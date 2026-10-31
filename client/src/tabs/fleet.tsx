@@ -66,15 +66,14 @@ export function FleetTab() {
 
   const roleCounts = snapshot.turtles.reduce(
     (counts, turtle) => {
-      counts[turtle.role] += 1;
+      counts[turtle.role as keyof typeof counts] += 1;
       return counts;
     },
-    { miner: 0, lumberjack: 0, hauler: 0, unassigned: 0 } as Record<TurtleRole, number>,
+    { mining: 0, music: 0, unassigned: 0 } as Record<TurtleRole, number>,
   );
   const roleCount = (count: number, label: string) => `${count} ${label}${count === 1 ? "" : "s"}`;
   const roleBreakdown = [
-    roleCount(roleCounts.lumberjack, "lumberjack"),
-    roleCount(roleCounts.hauler, "hauler"),
+    roleCount(roleCounts.music, "music"),
     roleCount(roleCounts.unassigned, "unassigned"),
   ].join(" · ");
 

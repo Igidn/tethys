@@ -6,6 +6,8 @@ local commands = require("lib.commands")
 
 local M = {}
 
+local wsRef = nil
+
 local function heartbeat(bus)
   local payload = bus.status and bus.status() or {}
   payload.v = 1
@@ -18,6 +20,42 @@ local function ack(ws, id, status, result)
   pcall(function()
     ws.send(util.jsonEncode({ v = 1, type = "ack", id = id, status = status, result = result }))
   end)
+end
+
+--- Send a message to the server, queuing it in the outbox if disconnected.
+local function busSend(bus, msg)
+  if bus.connected and wsRef then
+    local ok = pcall(function()
+      wsRef.send(util.jsonEncode(msg))
+    end)
+    if not ok then
+      queueOutbox(bus, msg)
+    end
+    return ok
+  end
+  queueOutbox(bus, msg)
+  return false
+end
+
+local function queueOutbox(bus, msg)
+  bus.outbox = bus.outbox or {}
+  if #bus.outbox < 200 then
+    bus.outbox[#bus.outbox + 1] = msg
+  end
+end
+
+local function flushOutbox(bus)
+  if not bus.connected or not wsRef or not bus.outbox or #bus.outbox == 0 then return end
+  local out = bus.outbox
+  bus.outbox = {}
+  for i = 1, #out do
+    local ok = pcall(function() wsRef.send(util.jsonEncode(out[i])) end)
+    if not ok then
+      -- Put the rest back and stop.
+      for j = i, #out do queueOutbox(bus, out[j]) end
+      return
+    end
+  end
 end
 
 function M.handle(msg, bus, ws, identity)
@@ -84,6 +122,10 @@ local function connectOnce(identity, bus)
   bus.config = welcome.config or bus.config
   bus.serverTime = welcome.serverTime
   bus.heartbeatMs = welcome.heartbeatMs or 5000
+  bus.outbox = bus.outbox or {}
+  bus.send = function(msg) return busSend(bus, msg) end
+  wsRef = ws
+  flushOutbox(bus)
   util.log("link: connected as", bus.agentId, "role", tostring(bus.role))
 
   local lastBeat = util.now()
@@ -112,12 +154,14 @@ local function connectOnce(identity, bus)
   end
 
   bus.connected = false
+  wsRef = nil
   pcall(function() ws.close() end)
   util.log("link: disconnected")
   return true
 end
 
 function M.run(identity, bus)
+  bus.outbox = bus.outbox or {}
   local backoff = 1
   local failures = 0
 

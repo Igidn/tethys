@@ -38,7 +38,7 @@ export function MiningTab() {
     if (!latestByTurtle.has(mission.turtleId)) latestByTurtle.set(mission.turtleId, mission);
   }
 
-  const miners = snapshot.turtles.filter((turtle) => turtle.role === "miner");
+  const miners = snapshot.turtles.filter((turtle) => turtle.role === "mining");
   const board = miners
     .map((turtle) => ({
       turtle,
